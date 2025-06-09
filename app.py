@@ -2,17 +2,8 @@ import streamlit as st
 import groq
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
-import numpy as np
-from database import User, MealPlan, ProgressLog, get_session
-import json
-import time
-import cv2
-from PIL import Image
-import io
-import mediapipe as mp
 import os
+from datetime import datetime
 
 # Set page config with advanced theme
 st.set_page_config(
@@ -295,212 +286,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Groq client
-def init_groq_client(api_key):
-    try:
-        client = groq.Client(api_key=api_key)
-        # List available models
-        try:
-            models = client.models.list()
-            st.sidebar.write("Available Models:")
-            for model in models.data:
-                st.sidebar.write(f"- {model.id}")
-        except Exception as e:
-            st.sidebar.error(f"Could not list models: {str(e)}")
-        return client
-    except Exception as e:
-        st.error(f"Error initializing Groq client: {str(e)}")
-        return None
-
-# Calculate BMI
-def calculate_bmi(weight, height):
-    return weight / ((height/100) ** 2)
-
-# Calculate BMR (Basal Metabolic Rate)
-def calculate_bmr(weight, height, age, gender):
-    if gender.lower() == 'male':
-        return 10 * weight + 6.25 * height - 5 * age + 5
-    return 10 * weight + 6.25 * height - 5 * age - 161
-
-# Calculate TDEE (Total Daily Energy Expenditure)
-def calculate_tdee(bmr, activity_level):
-    activity_multipliers = {
-        'sedentary': 1.2,
-        'light': 1.375,
-        'moderate': 1.55,
-        'active': 1.725,
-        'very_active': 1.9
-    }
-    return bmr * activity_multipliers.get(activity_level.lower(), 1.2)
-
-def list_available_models(api_key):
-    """List available models for the API key."""
-    try:
-        client = groq.Groq(api_key=api_key)
-        models = client.models.list()
-        return [model.id for model in models.data], None
-    except Exception as e:
-        return None, f"Error listing models: {str(e)}"
-
-def generate_meal_plan(user_data, api_key):
-    """Generate a personalized meal plan using Groq."""
-    try:
-        # Initialize Groq client
-        client = groq.Groq(api_key=api_key)
-        
-        # Create a detailed prompt for meal planning
-        prompt = f"""
-        Create a detailed 7-day meal plan for a {user_data['age']}-year-old {user_data['gender'].lower()} with the following characteristics:
-        - Weight: {user_data['weight']} kg
-        - Height: {user_data['height']} cm
-        - Activity Level: {user_data['activity_level']}
-        - Goal: {user_data['goal']}
-        
-        Please provide:
-        1. Daily calorie target
-        2. Macronutrient breakdown (protein, carbs, fats)
-        3. 7-day meal plan with:
-           - Breakfast
-           - Morning Snack
-           - Lunch
-           - Afternoon Snack
-           - Dinner
-        4. Portion sizes
-        5. Nutritional information for each meal
-        6. Shopping list
-        7. Meal prep tips
-        
-        Format the response in a clear, structured way.
-        """
-        
-        # Generate the meal plan using llama3-70b-8192
-        response = client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[
-                {"role": "system", "content": "You are a professional nutritionist and fitness expert."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=2000
-        )
-        
-        return response.choices[0].message.content
-        
-    except Exception as e:
-        st.error(f"Error generating meal plan: {str(e)}")
-        return None
-
-# Initialize MediaPipe Pose
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(
-    static_image_mode=True,
-    model_complexity=2,
-    min_detection_confidence=0.5
-)
-
-def analyze_body_composition(image):
-    """Analyze body composition using computer vision."""
-    try:
-        # Convert image to numpy array
-        image_np = np.array(image)
-        
-        # Convert to RGB
-        image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-        
-        # Process image with MediaPipe
-        results = pose.process(image_rgb)
-        
-        if not results.pose_landmarks:
-            return None, "No body detected in the image. Please try again with a clearer image."
-        
-        # Extract key points
-        landmarks = results.pose_landmarks.landmark
-        
-        # Calculate body measurements
-        height = calculate_height(landmarks)
-        shoulder_width = calculate_shoulder_width(landmarks)
-        hip_width = calculate_hip_width(landmarks)
-        waist_width = calculate_waist_width(landmarks)
-        
-        # Analyze body type
-        body_type = analyze_body_type(shoulder_width, hip_width, waist_width)
-        
-        # Estimate body fat percentage
-        body_fat = estimate_body_fat(landmarks, height)
-        
-        return {
-            'height': height,
-            'shoulder_width': shoulder_width,
-            'hip_width': hip_width,
-            'waist_width': waist_width,
-            'body_type': body_type,
-            'estimated_body_fat': body_fat
-        }, None
-        
-    except Exception as e:
-        return None, f"Error analyzing image: {str(e)}"
-
-def calculate_height(landmarks):
-    """Calculate height based on key points."""
-    # Use nose to ankle distance as height estimate
-    nose = landmarks[mp_pose.PoseLandmark.NOSE.value]
-    ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-    return abs(nose.y - ankle.y) * 100  # Convert to percentage
-
-def calculate_shoulder_width(landmarks):
-    """Calculate shoulder width."""
-    left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-    right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-    return abs(left_shoulder.x - right_shoulder.x) * 100
-
-def calculate_hip_width(landmarks):
-    """Calculate hip width."""
-    left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
-    right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
-    return abs(left_hip.x - right_hip.x) * 100
-
-def calculate_waist_width(landmarks):
-    """Calculate waist width."""
-    # Use midpoint between shoulders and hips
-    left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-    right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-    left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
-    right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
-    
-    waist_y = (left_shoulder.y + left_hip.y) / 2
-    # Estimate waist width based on proportions
-    return (abs(left_shoulder.x - right_shoulder.x) + abs(left_hip.x - right_hip.x)) / 2 * 100
-
-def analyze_body_type(shoulder_width, hip_width, waist_width):
-    """Analyze body type based on measurements."""
-    shoulder_to_hip_ratio = shoulder_width / hip_width
-    waist_to_hip_ratio = waist_width / hip_width
-    
-    if shoulder_to_hip_ratio > 1.1:
-        return "Mesomorph"
-    elif shoulder_to_hip_ratio < 0.9:
-        return "Ectomorph"
-    else:
-        return "Endomorph"
-
-def estimate_body_fat(landmarks, height):
-    """Estimate body fat percentage based on measurements."""
-    # This is a simplified estimation
-    # In a real application, you would use more sophisticated methods
-    waist = calculate_waist_width(landmarks)
-    neck = calculate_neck_width(landmarks)
-    
-    # Simplified body fat estimation formula
-    body_fat = (waist * 0.5 + neck * 0.3) / height * 100
-    return min(max(body_fat, 5), 40)  # Clamp between 5% and 40%
-
-def calculate_neck_width(landmarks):
-    """Calculate neck width."""
-    left_ear = landmarks[mp_pose.PoseLandmark.LEFT_EAR.value]
-    right_ear = landmarks[mp_pose.PoseLandmark.RIGHT_EAR.value]
-    return abs(left_ear.x - right_ear.x) * 100
-
-# Main app
 def main():
     st.title("AI Fitness & Nutrition Planner")
     
@@ -575,6 +360,54 @@ def main():
         else:
             st.info("Fill in your details and generate a plan to see it here!")
 
+def generate_meal_plan(user_data, api_key):
+    """Generate a personalized meal plan using Groq."""
+    try:
+        # Initialize Groq client
+        client = groq.Groq(api_key=api_key)
+        
+        # Create a detailed prompt for meal planning
+        prompt = f"""
+        Create a detailed 7-day meal plan for a {user_data['age']}-year-old {user_data['gender'].lower()} with the following characteristics:
+        - Weight: {user_data['weight']} kg
+        - Height: {user_data['height']} cm
+        - Activity Level: {user_data['activity_level']}
+        - Goal: {user_data['goal']}
+        
+        Please provide:
+        1. Daily calorie target
+        2. Macronutrient breakdown (protein, carbs, fats)
+        3. 7-day meal plan with:
+           - Breakfast
+           - Morning Snack
+           - Lunch
+           - Afternoon Snack
+           - Dinner
+        4. Portion sizes
+        5. Nutritional information for each meal
+        6. Shopping list
+        7. Meal prep tips
+        
+        Format the response in a clear, structured way.
+        """
+        
+        # Generate the meal plan using llama3-70b-8192
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[
+                {"role": "system", "content": "You are a professional nutritionist and fitness expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        st.error(f"Error generating meal plan: {str(e)}")
+        return None
+
 def download_plan(plan_text):
     """Create a downloadable text file of the meal plan."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -589,4 +422,4 @@ def download_plan(plan_text):
     )
 
 if __name__ == "__main__":
-    main() 
+    main()
